@@ -1,0 +1,91 @@
+# -*- coding:utf-8 -*-
+from django.db import models
+
+
+class {{ model.name }}(models.Model):
+    """{{ model.verbose_name }}"""
+    {% for field in model.fields -%}
+    {{ field.name }} = models.CharField('{{ field.verbose_name }}', default='', null=True, blank=True, max_length={{ field.max_length }})
+    {% endfor %}
+    class Meta:
+        db_table = '{{ model.snake_name }}'
+        verbose_name = '{{ model.verbose_name }}'
+        verbose_name_plural = verbose_name
+
+
+@admin.register({{ model.name }})
+class {{ model.name }}Admin(admin.ModelAdmin):
+    list_display = [{% for field in model.fields %}'{{ field.name }}', {% endfor %}]
+    list_display_links = None
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def has_view_permission(self, request, obj=None):
+        return False
+
+
+def import_{{ model.snake_name }}():
+    file_path = path_proc(r'{{ excel_filepath }}')
+
+    logger.info(f'读取文件: {file_path}')
+    xlsx = pd.ExcelFile(file_path)
+    df = pd.read_excel(xlsx, 0, header={{ excel_header }})
+    df.fillna('', inplace=True)
+
+    logger.info('开始处理数据')
+
+    id_field_list = {{ model.name }}.objects.values_list('{{ model.id_field.name }}', flat=True)
+    item_list = list({{ model.name }}.objects.all())
+
+    def get_item(id_value):
+        for i in item_list:
+            if i.shen_qing_ren_zheng_jian_hao_ma == id_value:
+                return i
+        return None
+
+    insert_data = []
+    update_data_once_max_lines = 100
+    update_data_sub_set_index = 0
+    update_data = [[]]
+    update_fields = set()
+
+    for index, row in df.iterrows():
+        if '{{ model.id_field.verbose_name }}' not in row:
+            logger.error('id_field {} is not existed'.format('{{ model.id_field.verbose_name }}'))
+            continue
+
+        if row['{{ model.id_field.verbose_name }}'] in id_field_list:
+            item = get_item(row['{{ model.id_field.verbose_name }}'])
+            {% for field in model.fields -%}
+            if '{{ field.verbose_name }}' in row:
+                if item.{{ field.name }} != row['{{ field.verbose_name }}']:
+                    item.{{ field.name }} = row['{{ field.verbose_name }}']
+                    update_fields.add('{{ field.name }}')
+            {% endfor %}
+            if len(update_data[update_data_sub_set_index]) >= update_data_once_max_lines:
+                update_data_sub_set_index += 1
+                update_data.append([])
+            update_data[update_data_sub_set_index].append(item)
+        else:
+            # {% for field in model.fields -%}{{ field.verbose_name }},{%- endfor %}
+            model_obj = {{ model.name }}()
+            {% for field in model.fields -%}
+            if '{{ field.verbose_name }}' in row:
+                model_obj.{{ field.name }} = row['{{ field.verbose_name }}']
+            {% endfor %}
+            insert_data.append(model_obj)
+
+    logger.info('开始批量导入')
+    {{ model.name }}.objects.bulk_create(insert_data)
+    logger.info('导入完成')
+
+    if len(update_data[update_data_sub_set_index]) > 0:
+        logger.info('开始批量更新')
+        for index, update_sub in enumerate(update_data):
+            logger.info(f'正在更新 {index * update_data_once_max_lines}-{(index + 1) * update_data_once_max_lines} 条数据')
+            {{ model.name }}.objects.bulk_update(update_sub, list(update_fields))
+        logger.info('更新完成')
